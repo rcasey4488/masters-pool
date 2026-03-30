@@ -47,45 +47,26 @@ td{padding:6px 4px;text-align:center}
 </head>
 <body>
 
-<div id="app"></div>
+<div id="app"><div style="display:flex;align-items:center;justify-content:center;min-height:100vh;background:var(--g)"><div class="pf" style="color:var(--gold);font-size:24px;animation:pulse 1.5s infinite">Loading Pool...</div></div></div>
 
 <script>
 // ═══════════════════════════════════════════════════════
-// FIREBASE CONFIG — Replace with your own project!
-// ═══════════════════════════════════════════════════════
-// 1. Go to https://console.firebase.google.com
-// 2. Create a new project (free tier is fine)
-// 3. Go to Realtime Database → Create Database → Start in TEST mode
-// 4. Go to Project Settings → General → Your apps → Add Web App
-// 5. Copy the config object and paste it below
-//
-// For now this uses a placeholder. The app will fall back to
-// localStorage if Firebase isn't configured.
+// FIREBASE — CONFIGURED
 // ═══════════════════════════════════════════════════════
 
 const FIREBASE_CONFIG = {
-  // PASTE YOUR FIREBASE CONFIG HERE:
-  // apiKey: "...",
-  // authDomain: "...",
-  // databaseURL: "...",
-  // projectId: "...",
-  // storageBucket: "...",
-  // messagingSenderId: "...",
-  // appId: "..."
+  apiKey: "AIzaSyD3RBCwBkMQKkKKGdDEY0Q1DoNVnS_jmhM",
+  authDomain: "the-masters-pool-2026.firebaseapp.com",
+  databaseURL: "https://the-masters-pool-2026-default-rtdb.firebaseio.com",
+  projectId: "the-masters-pool-2026",
+  storageBucket: "the-masters-pool-2026.firebasestorage.app",
+  messagingSenderId: "559798790391",
+  appId: "1:559798790391:web:274b7de09ff4395c8b4bf2"
 };
 
-let db = null;
-let dbRef = null;
-let useFirebase = false;
-
-try {
-  if (FIREBASE_CONFIG.apiKey) {
-    firebase.initializeApp(FIREBASE_CONFIG);
-    db = firebase.database();
-    dbRef = db.ref('masters-pool-2026');
-    useFirebase = true;
-  }
-} catch(e) { console.warn('Firebase not configured, using localStorage', e); }
+firebase.initializeApp(FIREBASE_CONFIG);
+const db = firebase.database();
+const dbRef = db.ref('masters-pool-2026');
 
 // ═══════════════════════════════════════════════════════
 // DATA
@@ -110,7 +91,6 @@ function matchName(n) {
   if(ALL_G.includes(n)) return n;
   const sn = strip(n);
   for(const g of ALL_G) if(strip(g)===sn) return g;
-  // Partial last name match
   const parts = n.split(" ");
   const last = strip(parts[parts.length-1]);
   for(const g of ALL_G) { const gl=strip(g.split(" ").pop()); if(gl===last) return g; }
@@ -120,7 +100,7 @@ function matchName(n) {
 const DEFAULT_STATE = {picks:{},tiebreakers:{},locked:false,espnScores:{},cutList:[],lastFetch:null,currentRound:0,manualScores:{},winningScore:null};
 
 // ═══════════════════════════════════════════════════════
-// APP STATE
+// STATE
 // ═══════════════════════════════════════════════════════
 
 let STATE = {...DEFAULT_STATE};
@@ -129,35 +109,22 @@ let currentView = 'leaderboard';
 let fetching = false;
 let toastMsg = '';
 let toastTimer = null;
-let autoTimer = null;
+let pickForMember = null;
 
 function saveState() {
-  if (useFirebase) {
-    dbRef.set(STATE);
-  } else {
-    localStorage.setItem('masters-pool-data', JSON.stringify(STATE));
-  }
+  dbRef.set(STATE);
 }
 
 function loadState(cb) {
-  if (useFirebase) {
-    dbRef.on('value', snap => {
-      const d = snap.val();
-      if (d) STATE = {...DEFAULT_STATE, ...d, cutList: d.cutList||[], picks: d.picks||{}, tiebreakers: d.tiebreakers||{}, espnScores: d.espnScores||{}, manualScores: d.manualScores||{}};
-      cb();
-    });
-  } else {
-    try {
-      const d = JSON.parse(localStorage.getItem('masters-pool-data'));
-      if (d) STATE = {...DEFAULT_STATE, ...d, cutList: d.cutList||[], picks: d.picks||{}, tiebreakers: d.tiebreakers||{}, espnScores: d.espnScores||{}, manualScores: d.manualScores||{}};
-    } catch(e) {}
+  dbRef.on('value', snap => {
+    const d = snap.val();
+    if (d) STATE = {...DEFAULT_STATE, ...d, cutList: d.cutList||[], picks: d.picks||{}, tiebreakers: d.tiebreakers||{}, espnScores: d.espnScores||{}, manualScores: d.manualScores||{}};
     cb();
-  }
+  });
 }
 
 function flash(msg) {
-  toastMsg = msg;
-  render();
+  toastMsg = msg; render();
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => { toastMsg = ''; render(); }, 2500);
 }
@@ -170,8 +137,8 @@ function golferScore(g) {
   const e = STATE.espnScores?.[g], m = STATE.manualScores?.[g], cut = (STATE.cutList||[]).includes(g);
   const rounds = [null,null,null,null];
   for(let i=0;i<4;i++){
-    if(m&&m[i]!==undefined&&m[i]!==null) rounds[i]=m[i];
-    else if(e&&e.rounds&&e.rounds[i]!==null&&e.rounds[i]!==undefined) rounds[i]=e.rounds[i];
+    if(m&&m[i]!==undefined&&m[i]!==null) rounds[i]=Number(m[i]);
+    else if(e&&e.rounds&&e.rounds[i]!==null&&e.rounds[i]!==undefined) rounds[i]=Number(e.rounds[i]);
     else if(i>=2&&cut) rounds[i]=80;
   }
   let tot=0,cnt=0; for(const r of rounds) if(r!==null){tot+=r;cnt++;}
@@ -206,7 +173,7 @@ function getAllPicked() {
 }
 
 // ═══════════════════════════════════════════════════════
-// ESPN FETCH
+// ESPN
 // ═══════════════════════════════════════════════════════
 
 async function fetchESPN() {
@@ -215,7 +182,7 @@ async function fetchESPN() {
     const r=await fetch("https://site.api.espn.com/apis/site/v2/sports/golf/pga/scoreboard");
     const d=await r.json();
     const ev=(d?.events||[]).find(e=>e.name?.toLowerCase().includes("masters")||e.shortName?.toLowerCase().includes("masters"));
-    if(!ev){flash("Masters not on ESPN scoreboard yet.");fetching=false;render();return;}
+    if(!ev){flash("Masters not on ESPN scoreboard yet — will work tournament week.");fetching=false;render();return;}
     const cs=ev.competitions?.[0]?.competitors||[];
     const ns={};const nc=[];let rd=0;
     for(const c of cs){
@@ -235,8 +202,8 @@ async function fetchESPN() {
     if(rd>=4){const l=cs.find(c=>c.sortOrder===1);if(l?.score?.displayValue){const p=parseInt(l.score.displayValue);if(!isNaN(p))ws=p;}}
     STATE.espnScores=ns;STATE.cutList=nc;STATE.lastFetch=new Date().toISOString();STATE.currentRound=rd;
     if(ws!==null)STATE.winningScore=ws;
-    saveState(); flash(`Scores updated! ${rd>0?'Round '+rd:'Pre-tournament'}`);
-  } catch(e){console.error(e);flash("ESPN fetch failed.");}
+    saveState(); flash('Scores updated! '+(rd>0?'Round '+rd:'Pre-tournament'));
+  } catch(e){console.error(e);flash("ESPN fetch failed — try again.");}
   fetching=false;render();
 }
 
@@ -245,78 +212,75 @@ async function fetchESPN() {
 // ═══════════════════════════════════════════════════════
 
 const $ = id => document.getElementById(id);
-const h = s => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+const h = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 const ln = g => g ? g.split(" ").pop() : "—";
 const isComm = () => currentUser === COMMISSIONER;
 const completePicks = () => MEMBERS.filter(m=>STATE.picks?.[m]&&Object.keys(STATE.picks[m]).length===6).length;
 
 function render() {
   if (!currentUser) { renderWho(); return; }
-  const app = $('app');
   const board = getBoard();
-  const picked = getAllPicked();
 
   let html = '';
-
-  // Toast
-  if(toastMsg) html += `<div class="toast">${h(toastMsg)}</div>`;
+  if(toastMsg) html += '<div class="toast">'+h(toastMsg)+'</div>';
 
   // Header
-  html += `<div class="hdr"><div class="hdr-in">
-    <div style="display:flex;align-items:center;justify-content:space-between">
-      <div style="display:flex;align-items:center;gap:10px">
-        <span style="font-size:26px">⛳</span>
-        <div>
-          <h1 class="pf" style="color:var(--gold);font-size:21px;font-weight:900;letter-spacing:.5px">THE MASTERS POOL</h1>
-          <div class="ss" style="color:rgba(255,255,255,.55);font-size:10px;letter-spacing:2px;text-transform:uppercase">Augusta National · April 9–12, 2026</div>
-        </div>
-      </div>
-      <div style="text-align:right" class="ss">
-        <div style="background:${STATE.locked?'var(--gold)':'rgba(255,255,255,.12)'};color:${STATE.locked?'var(--dk)':'white'};padding:3px 9px;border-radius:10px;font-weight:600;display:inline-block;font-size:11px">
-          ${STATE.currentRound>0?`<span class="ld"></span>Round ${STATE.currentRound}`:(STATE.locked?'Locked':'Draft Open')}
-        </div>
-        <div style="color:rgba(255,255,255,.35);margin-top:2px;font-size:10px">${completePicks()}/11 in · <span onclick="switchUser()" style="cursor:pointer;text-decoration:underline">${h(currentUser)}</span></div>
-      </div>
-    </div>
-    <div class="nav">
-      ${['leaderboard','mypicks','scores','allpicks','rules'].map(v=>`<button class="${currentView===v?'act':''}" onclick="setView('${v}')">${{leaderboard:'Leaderboard',mypicks:'My Picks',scores:'Scores',allpicks:'All Picks',rules:'Rules'}[v]}</button>`).join('')}
-    </div>
-  </div></div>`;
+  html += '<div class="hdr"><div class="hdr-in">'
+    +'<div style="display:flex;align-items:center;justify-content:space-between">'
+    +'<div style="display:flex;align-items:center;gap:10px">'
+    +'<span style="font-size:26px">⛳</span>'
+    +'<div><h1 class="pf" style="color:var(--gold);font-size:21px;font-weight:900;letter-spacing:.5px">THE MASTERS POOL</h1>'
+    +'<div class="ss" style="color:rgba(255,255,255,.55);font-size:10px;letter-spacing:2px;text-transform:uppercase">Augusta National · April 9–12, 2026</div></div></div>'
+    +'<div style="text-align:right" class="ss">'
+    +'<div style="background:'+(STATE.locked?'var(--gold)':'rgba(255,255,255,.12)')+';color:'+(STATE.locked?'var(--dk)':'white')+';padding:3px 9px;border-radius:10px;font-weight:600;display:inline-block;font-size:11px">'
+    +(STATE.currentRound>0?'<span class="ld"></span>Round '+STATE.currentRound:(STATE.locked?'Locked':'Draft Open'))
+    +'</div>'
+    +'<div style="color:rgba(255,255,255,.35);margin-top:2px;font-size:10px">'+completePicks()+'/11 in · <span onclick="switchUser()" style="cursor:pointer;text-decoration:underline">'+h(currentUser)+'</span></div>'
+    +'</div></div>';
 
-  html += '<div class="main">';
+  // Nav
+  let tabs = [{id:'leaderboard',l:'Leaderboard'},{id:'mypicks',l:'My Picks'},{id:'scores',l:'Scores'},{id:'allpicks',l:'All Picks'},{id:'rules',l:'Rules'}];
+  if(!STATE.locked && !isComm()) tabs = tabs.filter(t=>t.id!=='allpicks');
+  html += '<div class="nav">';
+  tabs.forEach(t=>{ html += '<button class="'+(currentView===t.id?'act':'')+'" onclick="setView(\''+t.id+'\')">'+t.l+'</button>'; });
+  html += '</div></div></div><div class="main">';
 
   // ──── LEADERBOARD ────
   if(currentView==='leaderboard') {
-    html += `<div style="animation:fadeIn .3s">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
-        <div>
-          <div class="pf" style="font-size:19px;font-weight:700">Pool Standings</div>
-          <div class="ss" style="font-size:11px;color:#999">Best 4 of 6 · Lowest wins${STATE.lastFetch?` · ${new Date(STATE.lastFetch).toLocaleTimeString()}`:''}</div>
-        </div>
-        <button onclick="fetchESPN()" style="background:var(--g);color:white;padding:7px 14px;border-radius:8px;font-size:12px;font-weight:600;opacity:${fetching?.5:1}" ${fetching?'disabled':''}>${fetching?'⏳':'🔄'} Refresh</button>
-      </div>`;
+    html += '<div style="animation:fadeIn .3s">'
+      +'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">'
+      +'<div><div class="pf" style="font-size:19px;font-weight:700">Pool Standings</div>'
+      +'<div class="ss" style="font-size:11px;color:#999">Best 4 of 6 · Lowest wins'+(STATE.lastFetch?' · '+new Date(STATE.lastFetch).toLocaleTimeString():'')+'</div></div>'
+      +'<button onclick="fetchESPN()" style="background:var(--g);color:white;padding:7px 14px;border-radius:8px;font-size:12px;font-weight:600;opacity:'+(fetching?.5:1)+'"'+(fetching?' disabled':'')+'>'+(fetching?'⏳':'🔄')+' Refresh</button>'
+      +'</div>';
 
     board.forEach((e,i)=>{
       const pos=i+1,lead=pos===1&&e.best4!==null;
-      html += `<div class="card" style="border:${lead?'2px solid var(--gold)':'1px solid #e0e0e0'};background:${lead?'linear-gradient(135deg,var(--g),var(--gd))':'white'};animation:fadeIn ${(.1+i*.04).toFixed(2)}s">
-        <div style="padding:11px 13px">
-          <div style="display:flex;justify-content:space-between;align-items:center">
-            <div style="display:flex;align-items:center;gap:9px">
-              <div style="width:28px;height:28px;border-radius:50%;background:${pos===1?'var(--gold)':(pos<=3?'rgba(212,168,67,.27)':'#f0f0f0')};display:flex;align-items:center;justify-content:center;font-weight:700;font-size:13px;color:${pos===1?'var(--dk)':(pos<=3?'var(--gold)':'#999')};flex-shrink:0" class="pf">${pos}</div>
-              <div>
-                <div class="pf" style="font-size:15px;font-weight:700;color:${lead?'white':'var(--dk)'}">${h(e.name)}${e.name===currentUser?' (You)':''}</div>
-                ${e.tb!==null?`<div class="ss" style="font-size:10px;color:${lead?'rgba(255,255,255,.45)':'#bbb'}">TB: ${e.tb}</div>`:''}
-              </div>
-            </div>
-            <div class="pf" style="font-size:24px;font-weight:900;color:${lead?'var(--gold)':'var(--g)'}">${e.best4!==null?e.best4:'—'}</div>
-          </div>`;
+      html += '<div class="card" style="border:'+(lead?'2px solid var(--gold)':'1px solid #e0e0e0')+';background:'+(lead?'linear-gradient(135deg,var(--g),var(--gd))':'white')+';animation:fadeIn '+(.1+i*.04).toFixed(2)+'s">'
+        +'<div style="padding:11px 13px">'
+        +'<div style="display:flex;justify-content:space-between;align-items:center">'
+        +'<div style="display:flex;align-items:center;gap:9px">'
+        +'<div class="pf" style="width:28px;height:28px;border-radius:50%;background:'+(pos===1?'var(--gold)':(pos<=3?'rgba(212,168,67,.27)':'#f0f0f0'))+';display:flex;align-items:center;justify-content:center;font-weight:700;font-size:13px;color:'+(pos===1?'var(--dk)':(pos<=3?'var(--gold)':'#999'))+';flex-shrink:0">'+pos+'</div>'
+        +'<div><div class="pf" style="font-size:15px;font-weight:700;color:'+(lead?'white':'var(--dk)')+'">'+h(e.name)+(e.name===currentUser?' (You)':'')+'</div>'
+        +(e.tb!==null?'<div class="ss" style="font-size:10px;color:'+(lead?'rgba(255,255,255,.45)':'#bbb')+'">TB: '+e.tb+'</div>':'')
+        +'</div></div>'
+        +'<div class="pf" style="font-size:24px;font-weight:900;color:'+(lead?'var(--gold)':'var(--g)')+'">'+( e.best4!==null?e.best4:'—')+'</div>'
+        +'</div>';
 
-      if(e.details.some(d=>d.golfer)) {
+      if(e.details.some(d=>d.golfer) && (STATE.locked || e.name===currentUser || isComm())) {
         html += '<div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:7px">';
         e.details.forEach(d=>{
-          if(!d.golfer){html+=`<span class="ss" style="font-size:10px;color:${lead?'rgba(255,255,255,.25)':'#ccc'};padding:2px 7px;background:${lead?'rgba(255,255,255,.04)':'#f8f8f5'};border-radius:5px">T${d.tier}: —</span>`;return;}
+          if(!d.golfer){html+='<span class="ss" style="font-size:10px;color:'+(lead?'rgba(255,255,255,.25)':'#ccc')+';padding:2px 7px;background:'+(lead?'rgba(255,255,255,.04)':'#f8f8f5')+';border-radius:5px">T'+d.tier+': —</span>';return;}
           const drop=!d.used&&e.details.filter(x=>x.total!==null).length>=4;
-          html+=`<span class="ss" style="font-size:10px;padding:2px 7px;border-radius:5px;background:${d.used?(lead?'rgba(212,168,67,.18)':'rgba(0,103,71,.06)'):(lead?'rgba(255,255,255,.04)':'#f8f8f5')};border:${d.used?`1px solid ${lead?'rgba(212,168,67,.35)':'rgba(0,103,71,.2)'}`:'1px solid transparent'};color:${lead?(d.used?'var(--gold)':'rgba(255,255,255,.35)'):(drop?'#bbb':'#555')};text-decoration:${drop?'line-through':'none'};opacity:${drop?.55:1}"><b>T${d.tier}</b> ${h(ln(d.golfer))}${d.total!==null?`<span style="font-weight:700;margin-left:2px;color:${lead?'white':'var(--dk)'}">${d.total}</span>`:''}${d.isCut?'<span style="color:#e53935;margin-left:2px;font-size:9px">MC</span>':''}</span>`;
+          html+='<span class="ss" style="font-size:10px;padding:2px 7px;border-radius:5px;'
+            +'background:'+(d.used?(lead?'rgba(212,168,67,.18)':'rgba(0,103,71,.06)'):(lead?'rgba(255,255,255,.04)':'#f8f8f5'))+';'
+            +'border:'+(d.used?'1px solid '+(lead?'rgba(212,168,67,.35)':'rgba(0,103,71,.2)'):'1px solid transparent')+';'
+            +'color:'+(lead?(d.used?'var(--gold)':'rgba(255,255,255,.35)'):(drop?'#bbb':'#555'))+';'
+            +'text-decoration:'+(drop?'line-through':'none')+';opacity:'+(drop?.55:1)+'">'
+            +'<b>T'+d.tier+'</b> '+h(ln(d.golfer))
+            +(d.total!==null?'<span style="font-weight:700;margin-left:2px;color:'+(lead?'white':'var(--dk)')+'">'+d.total+'</span>':'')
+            +(d.isCut?'<span style="color:#e53935;margin-left:2px;font-size:9px">MC</span>':'')
+            +'</span>';
         });
         html += '</div>';
       }
@@ -327,100 +291,92 @@ function render() {
 
   // ──── MY PICKS ────
   if(currentView==='mypicks') {
-    const mem = currentUser;
     const canEdit = !STATE.locked || isComm();
+    const editMem = (isComm() && pickForMember) ? pickForMember : currentUser;
 
     html += '<div style="animation:fadeIn .3s">';
 
-    // Commissioner controls
     if(isComm()) {
-      html += `<div style="display:flex;gap:8px;margin-bottom:10px;align-items:center;flex-wrap:wrap">
-        <span class="ss" style="font-size:12px;color:var(--g);font-weight:600">🔑 Commissioner</span>`;
-      if(!STATE.locked) html += `<button onclick="lockPicks()" style="background:var(--gold);color:var(--dk);padding:7px 14px;border-radius:8px;font-size:12px;font-weight:600">🔒 Lock All Picks</button>`;
-      else html += `<button onclick="unlockPicks()" style="background:#e53935;color:white;padding:7px 14px;border-radius:8px;font-size:12px;font-weight:600">🔓 Unlock Picks</button>`;
-      // Pick for others
-      html += `<select onchange="setPickFor(this.value)" style="border:2px solid var(--g);border-radius:8px;padding:5px 10px;font-size:12px">
-        <option value="">Enter picks for...</option>
-        ${MEMBERS.map(m=>`<option value="${m}" ${m===mem?'selected':''}>${m}</option>`).join('')}
-      </select>`;
-      html += '</div>';
+      html += '<div style="display:flex;gap:8px;margin-bottom:10px;align-items:center;flex-wrap:wrap">'
+        +'<span class="ss" style="font-size:12px;color:var(--g);font-weight:600">🔑 Commissioner</span>';
+      if(!STATE.locked) html += '<button onclick="lockPicks()" style="background:var(--gold);color:var(--dk);padding:7px 14px;border-radius:8px;font-size:12px;font-weight:600">🔒 Lock All Picks</button>';
+      else html += '<button onclick="unlockPicks()" style="background:#e53935;color:white;padding:7px 14px;border-radius:8px;font-size:12px;font-weight:600">🔓 Unlock Picks</button>';
+      html += '<select onchange="setPickFor(this.value)" style="border:2px solid var(--g);border-radius:8px;padding:5px 10px;font-size:12px">';
+      MEMBERS.forEach(m=>{ html+='<option value="'+m+'"'+(m===editMem?' selected':'')+'>'+m+'</option>'; });
+      html += '</select></div>';
     }
 
     if(!canEdit) {
-      html += `<div style="background:#fff3e0;padding:10px;border-radius:8px;margin-bottom:10px;font-size:12px;border:1px solid #ffe0b2" class="ss">🔒 Picks are locked. Only the commissioner (Casey) can make changes now.</div>`;
+      html += '<div style="background:#fff3e0;padding:10px;border-radius:8px;margin-bottom:10px;font-size:12px;border:1px solid #ffe0b2" class="ss">🔒 Picks are locked. Only the commissioner (Casey) can make changes now.</div>';
     }
 
-    const editMem = isComm() ? (window._pickForMember || currentUser) : currentUser;
+    if(isComm() && editMem !== currentUser) {
+      html += '<div style="background:#e3f2fd;padding:8px 12px;border-radius:8px;margin-bottom:10px;font-size:12px;border:1px solid #90caf9" class="ss">Editing picks for <b>'+h(editMem)+'</b></div>';
+    }
 
-    // Tier cards
     for(let tier=1;tier<=6;tier++){
       const pick = STATE.picks?.[editMem]?.[tier];
-      html += `<div class="card">
-        <div style="background:${pick?'linear-gradient(135deg,var(--g),var(--gd))':'#f5f5f0'};padding:7px 12px;display:flex;justify-content:space-between;align-items:center">
-          <span class="pf" style="font-size:13px;font-weight:700;color:${pick?'var(--gold)':'var(--dk)'}">${TIERS[tier].label}</span>
-          ${pick?`<span class="ss" style="background:var(--gold);color:var(--dk);padding:2px 9px;border-radius:10px;font-size:11px;font-weight:600">${h(pick)}</span>`:''}
-        </div>
-        <div style="padding:9px;display:flex;flex-wrap:wrap;gap:4px">
-          ${TIERS[tier].golfers.map(g=>`<button class="chip${pick===g?' on':''}" onclick="makePick('${editMem.replace(/'/g,"\\'")}',${tier},'${g.replace(/'/g,"\\'")}')" ${canEdit?'':'disabled'} style="${!canEdit?'opacity:.5;cursor:default':''}">${h(g)}</button>`).join('')}
-        </div>
-      </div>`;
+      html += '<div class="card">'
+        +'<div style="background:'+(pick?'linear-gradient(135deg,var(--g),var(--gd))':'#f5f5f0')+';padding:7px 12px;display:flex;justify-content:space-between;align-items:center">'
+        +'<span class="pf" style="font-size:13px;font-weight:700;color:'+(pick?'var(--gold)':'var(--dk)')+'">'+TIERS[tier].label+'</span>'
+        +(pick?'<span class="ss" style="background:var(--gold);color:var(--dk);padding:2px 9px;border-radius:10px;font-size:11px;font-weight:600">'+h(pick)+'</span>':'')
+        +'</div><div style="padding:9px;display:flex;flex-wrap:wrap;gap:4px">';
+      TIERS[tier].golfers.forEach(g=>{
+        const esc = g.replace(/'/g,"\\'");
+        html += '<button class="chip'+(pick===g?' on':'')+'" onclick="makePick(\''+editMem.replace(/'/g,"\\'")+'\','+tier+',\''+esc+'\')"'+(canEdit?'':' disabled style="opacity:.5;cursor:default"')+'>'+h(g)+'</button>';
+      });
+      html += '</div></div>';
     }
 
-    // Tiebreaker
     const tbVal = STATE.tiebreakers?.[editMem] ?? '';
-    html += `<div class="card" style="padding:12px">
-      <div class="pf" style="font-size:13px;font-weight:700;margin-bottom:5px">Tiebreaker${isComm()&&editMem!==currentUser?` (for ${editMem})`:''}</div>
-      <div class="ss" style="font-size:11px;color:#888;margin-bottom:7px">Predict the winning score (e.g., -12)</div>
-      <input type="number" value="${tbVal}" onchange="setTB('${editMem.replace(/'/g,"\\'")}',this.value)" placeholder="-10" style="border:2px solid var(--g);border-radius:8px;padding:6px 10px;font-size:16px;width:85px;text-align:center;font-weight:600" ${canEdit?'':'disabled'}>
-    </div>`;
-
-    html += '</div>';
+    html += '<div class="card" style="padding:12px">'
+      +'<div class="pf" style="font-size:13px;font-weight:700;margin-bottom:5px">Tiebreaker'+(isComm()&&editMem!==currentUser?' (for '+h(editMem)+')':'')+'</div>'
+      +'<div class="ss" style="font-size:11px;color:#888;margin-bottom:7px">Predict the winning score (e.g., -12)</div>'
+      +'<input type="number" value="'+tbVal+'" onchange="setTB(\''+editMem.replace(/'/g,"\\'")+'\',this.value)" placeholder="-10" style="border:2px solid var(--g);border-radius:8px;padding:6px 10px;font-size:16px;width:85px;text-align:center;font-weight:600"'+(canEdit?'':' disabled')+'>'
+      +'</div></div>';
   }
 
   // ──── SCORES ────
   if(currentView==='scores') {
-    const sorted = [...getAllPicked()].sort((a,b)=>{const sa=golferScore(a),sb=golferScore(b);if(sa.total===null&&sb.total===null)return a.localeCompare(b);if(sa.total===null)return 1;if(sb.total===null)return -1;return sa.total-sb.total;});
+    const picked = [...getAllPicked()].sort((a,b)=>{const sa=golferScore(a),sb=golferScore(b);if(sa.total===null&&sb.total===null)return a.localeCompare(b);if(sa.total===null)return 1;if(sb.total===null)return -1;return sa.total-sb.total;});
 
-    html += `<div style="animation:fadeIn .3s">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
-        <div class="pf" style="font-size:19px;font-weight:700">Golfer Scores</div>
-        <button onclick="fetchESPN()" style="background:var(--g);color:white;padding:7px 14px;border-radius:8px;font-size:12px;font-weight:600;opacity:${fetching?.5:1}" ${fetching?'disabled':''}>${fetching?'⏳':'🔄'} ESPN</button>
-      </div>
-      ${STATE.lastFetch?`<div class="ss" style="font-size:11px;color:#999;margin-bottom:6px">Last: ${new Date(STATE.lastFetch).toLocaleString()} · Auto-refreshes every 5 min</div>`:''}
-      <div style="background:#e8f5e9;padding:9px;border-radius:8px;margin-bottom:10px;font-size:11px;border:1px solid rgba(0,103,71,.2)" class="ss">💡 Tap "ESPN" to pull live Masters scores. Only your group's golfers shown below.</div>
-      <div style="overflow-x:auto">
-        <table class="ss">
-          <thead><tr style="background:var(--g);color:white">
-            <th class="sticky" style="background:var(--g);z-index:2;min-width:80px">Golfer</th>
-            <th>Pos</th><th>R1</th><th>R2</th><th>R3</th><th>R4</th><th>Tot</th><th>Par</th>
-          </tr></thead>
-          <tbody>`;
+    html += '<div style="animation:fadeIn .3s">'
+      +'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">'
+      +'<div class="pf" style="font-size:19px;font-weight:700">Golfer Scores</div>'
+      +'<button onclick="fetchESPN()" style="background:var(--g);color:white;padding:7px 14px;border-radius:8px;font-size:12px;font-weight:600;opacity:'+(fetching?.5:1)+'"'+(fetching?' disabled':'')+'>'+(fetching?'⏳':'🔄')+' ESPN</button></div>'
+      +(STATE.lastFetch?'<div class="ss" style="font-size:11px;color:#999;margin-bottom:6px">Last: '+new Date(STATE.lastFetch).toLocaleString()+' · Auto-refreshes every 5 min</div>':'')
+      +'<div style="background:#e8f5e9;padding:9px;border-radius:8px;margin-bottom:10px;font-size:11px;border:1px solid rgba(0,103,71,.2)" class="ss">💡 Tap "ESPN" to pull live Masters scores. Only your group\'s golfers shown.</div>'
+      +'<div style="overflow-x:auto"><table class="ss">'
+      +'<thead><tr style="background:var(--g);color:white">'
+      +'<th class="sticky" style="background:var(--g);z-index:2;min-width:80px">Golfer</th>'
+      +'<th>Pos</th><th>R1</th><th>R2</th><th>R3</th><th>R4</th><th>Tot</th><th>Par</th>'
+      +'</tr></thead><tbody>';
 
-    sorted.forEach((g,i)=>{
+    picked.forEach((g,i)=>{
       const s=golferScore(g);
-      html += `<tr style="background:${i%2===0?'white':'#f9f8f4'};border-bottom:1px solid #eee">
-        <td class="sticky" style="background:${i%2===0?'white':'#f9f8f4'};font-weight:500;white-space:nowrap;color:${s.isCut?'#999':'var(--dk)'}">${h(ln(g))}${s.isCut?'<span style="color:#e53935;font-size:9px;margin-left:3px;font-weight:700">MC</span>':''}</td>
-        <td style="font-weight:600;color:var(--g);font-size:11px">${h(s.position)||'—'}</td>`;
+      const esc=g.replace(/'/g,"\\'");
+      html += '<tr style="background:'+(i%2===0?'white':'#f9f8f4')+';border-bottom:1px solid #eee">'
+        +'<td class="sticky" style="background:'+(i%2===0?'white':'#f9f8f4')+';font-weight:500;white-space:nowrap;color:'+(s.isCut?'#999':'var(--dk)')+'">'+h(ln(g))+(s.isCut?'<span style="color:#e53935;font-size:9px;margin-left:3px;font-weight:700">MC</span>':'')+'</td>'
+        +'<td style="font-weight:600;color:var(--g);font-size:11px">'+(s.position||'—')+'</td>';
       for(let r=0;r<4;r++){
         if(isComm()){
-          const val = STATE.manualScores?.[g]?.[r] ?? s.rounds[r] ?? '';
-          html += `<td><input type="number" value="${val}" onchange="setManual('${g.replace(/'/g,"\\'")}',${r},this.value)" style="width:42px;text-align:center;border:1px solid #ddd;border-radius:4px;padding:3px 1px;font-size:12px;background:${s.rounds[r]!==null?'#e8f5e9':'white'}"></td>`;
+          const val = STATE.manualScores?.[g]?.[r] ?? (s.rounds[r]!==null?s.rounds[r]:'');
+          html += '<td><input type="number" value="'+val+'" onchange="setManual(\''+esc+'\','+r+',this.value)" style="width:42px;text-align:center;border:1px solid #ddd;border-radius:4px;padding:3px 1px;font-size:12px;background:'+(s.rounds[r]!==null?'#e8f5e9':'white')+'"></td>';
         } else {
-          html += `<td style="color:${s.rounds[r]!==null?'var(--dk)':'#ccc'};font-weight:${s.rounds[r]!==null?600:400}">${s.rounds[r]!==null?s.rounds[r]:'—'}</td>`;
+          html += '<td style="color:'+(s.rounds[r]!==null?'var(--dk)':'#ccc')+';font-weight:'+(s.rounds[r]!==null?600:400)+'">'+(s.rounds[r]!==null?s.rounds[r]:'—')+'</td>';
         }
       }
-      html += `<td style="font-weight:700;color:var(--g)">${s.total??'—'}</td>
-        <td style="font-weight:600;font-size:11px;color:${s.toPar?.startsWith('-')?'#2e7d32':(s.toPar?.startsWith('+')?'#c62828':'#666')}">${h(s.toPar)||'—'}</td></tr>`;
+      html += '<td style="font-weight:700;color:var(--g)">'+(s.total??'—')+'</td>'
+        +'<td style="font-weight:600;font-size:11px;color:'+(s.toPar?.startsWith('-')?'#2e7d32':(s.toPar?.startsWith('+')?'#c62828':'#666'))+'">'+h(s.toPar||'—')+'</td></tr>';
     });
 
     html += '</tbody></table></div>';
 
-    // MC toggles for commissioner
     if(isComm()) {
-      html += `<div style="margin-top:14px"><div class="ss" style="font-size:12px;font-weight:600;margin-bottom:6px">Toggle Missed Cut:</div><div style="display:flex;flex-wrap:wrap;gap:4px">`;
+      html += '<div style="margin-top:14px"><div class="ss" style="font-size:12px;font-weight:600;margin-bottom:6px">Toggle Missed Cut:</div><div style="display:flex;flex-wrap:wrap;gap:4px">';
       [...getAllPicked()].sort().forEach(g=>{
-        const mc = (STATE.cutList||[]).includes(g);
-        html += `<button class="chip" onclick="toggleCut('${g.replace(/'/g,"\\'")}')" style="background:${mc?'#e53935':'#f5f5f0'};color:${mc?'white':'#666'};font-size:10px">${h(ln(g))}${mc?' ✗':''}</button>`;
+        const mc=(STATE.cutList||[]).includes(g);
+        html+='<button class="chip" onclick="toggleCut(\''+g.replace(/'/g,"\\'")+'\')" style="background:'+(mc?'#e53935':'#f5f5f0')+';color:'+(mc?'white':'#666')+';font-size:10px">'+h(ln(g))+(mc?' ✗':'')+'</button>';
       });
       html += '</div></div>';
     }
@@ -429,163 +385,116 @@ function render() {
 
   // ──── ALL PICKS ────
   if(currentView==='allpicks') {
-    const b = getBoard();
-    html += `<div style="animation:fadeIn .3s">
-      <div class="pf" style="font-size:19px;font-weight:700;margin-bottom:10px">All Picks</div>
-      <div style="overflow-x:auto"><table class="ss">
-        <thead><tr style="background:var(--g);color:white">
-          <th style="text-align:left;padding-left:8px">Name</th>
-          ${[1,2,3,4,5,6].map(t=>`<th>T${t}</th>`).join('')}
-          <th>TB</th><th>Score</th>
-        </tr></thead><tbody>`;
-    b.forEach((e,i)=>{
-      html += `<tr style="background:${i%2===0?'white':'#f9f8f4'};border-bottom:1px solid #eee">
-        <td style="text-align:left;padding-left:8px;font-weight:600;white-space:nowrap">${h(e.name)}</td>`;
+    html += '<div style="animation:fadeIn .3s">'
+      +'<div class="pf" style="font-size:19px;font-weight:700;margin-bottom:10px">All Picks</div>'
+      +'<div style="overflow-x:auto"><table class="ss">'
+      +'<thead><tr style="background:var(--g);color:white">'
+      +'<th style="text-align:left;padding-left:8px">Name</th>';
+    for(let t=1;t<=6;t++) html+='<th>T'+t+'</th>';
+    html += '<th>TB</th><th>Score</th></tr></thead><tbody>';
+    board.forEach((e,i)=>{
+      html += '<tr style="background:'+(i%2===0?'white':'#f9f8f4')+';border-bottom:1px solid #eee">'
+        +'<td style="text-align:left;padding-left:8px;font-weight:600;white-space:nowrap">'+h(e.name)+'</td>';
       e.details.forEach(d=>{
         const drop=!d.used&&e.details.filter(x=>x.total!==null).length>=4;
-        html += `<td style="font-size:10px;color:${d.golfer?(d.used?'var(--g)':'#888'):'#ddd'};font-weight:${d.used?700:400};text-decoration:${drop?'line-through':'none'}">
-          ${d.golfer?h(ln(d.golfer)):'—'}${d.total!==null?`<div style="font-size:9px;font-weight:700;color:var(--dk)">${d.total}</div>`:''}
-        </td>`;
+        html+='<td style="font-size:10px;color:'+(d.golfer?(d.used?'var(--g)':'#888'):'#ddd')+';font-weight:'+(d.used?700:400)+';text-decoration:'+(drop?'line-through':'none')+'">'
+          +(d.golfer?h(ln(d.golfer)):'—')+(d.total!==null?'<div style="font-size:9px;font-weight:700;color:var(--dk)">'+d.total+'</div>':'')+'</td>';
       });
-      html += `<td style="font-weight:600">${e.tb??'—'}</td>
-        <td style="font-weight:700;color:var(--g);font-size:13px">${e.best4??'—'}</td></tr>`;
+      html+='<td style="font-weight:600">'+(e.tb??'—')+'</td>'
+        +'<td style="font-weight:700;color:var(--g);font-size:13px">'+(e.best4??'—')+'</td></tr>';
     });
     html += '</tbody></table></div></div>';
   }
 
   // ──── RULES ────
   if(currentView==='rules') {
-    html += `<div style="animation:fadeIn .3s">
-      <div class="card" style="padding:16px">
-        <h2 class="pf" style="font-size:19px;font-weight:700;color:var(--g);margin-bottom:10px">Pool Rules</h2>
-        <div class="ss" style="font-size:13px;line-height:1.7;color:#444">
-          <p style="margin-bottom:10px"><b>Format:</b> Each person picks one golfer from each of the 6 tiers (6 total).</p>
-          <p style="margin-bottom:10px"><b>Scoring:</b> Best four of six golfer tournament totals added together. Lowest wins.</p>
-          <p style="margin-bottom:10px"><b>Missed Cut:</b> Gets an 80 for Rounds 3 &amp; 4.</p>
-          <p style="margin-bottom:10px"><b>Tiebreaker:</b> Predict the winning score. Closest wins.</p>
-          <p style="margin-bottom:10px"><b>Live Scores:</b> Pulls from ESPN. Hit Refresh anytime — auto-updates every 5 min during the tournament.</p>
-          <p style="background:rgba(0,103,71,.05);padding:10px;border-radius:8px;border:1px solid rgba(0,103,71,.15)"><b style="color:var(--g)">Players:</b> ${MEMBERS.join(', ')}</p>
-        </div>
-      </div>`;
+    html += '<div style="animation:fadeIn .3s">'
+      +'<div class="card" style="padding:16px">'
+      +'<h2 class="pf" style="font-size:19px;font-weight:700;color:var(--g);margin-bottom:10px">Pool Rules</h2>'
+      +'<div class="ss" style="font-size:13px;line-height:1.7;color:#444">'
+      +'<p style="margin-bottom:10px"><b>Format:</b> Each person picks one golfer from each of the 6 tiers (6 total).</p>'
+      +'<p style="margin-bottom:10px"><b>Scoring:</b> After the tournament, take the best four of your six golfer scores and add them together. Lowest total wins.</p>'
+      +'<p style="margin-bottom:10px"><b>Missed Cut:</b> Any golfer who misses the cut gets an 80 for Rounds 3 &amp; 4.</p>'
+      +'<p style="margin-bottom:10px"><b>Tiebreaker:</b> Predict the winning score (e.g., if the winner posts -12, enter -12). Closest to actual wins the tiebreaker.</p>'
+      +'<p style="margin-bottom:10px"><b>Live Scores:</b> Pulls from ESPN. Hit Refresh anytime — auto-updates every 5 minutes during the tournament.</p>'
+      +'<p style="background:rgba(0,103,71,.05);padding:10px;border-radius:8px;border:1px solid rgba(0,103,71,.15)"><b style="color:var(--g)">Players:</b> '+MEMBERS.join(', ')+'</p>'
+      +'</div></div>';
 
     if(isComm()) {
-      html += `<div class="card" style="padding:12px;background:#fff8f8;border-color:#ffcdd2">
-        <div class="pf" style="font-size:13px;font-weight:700;color:#c62828;margin-bottom:6px">Commissioner Controls</div>
-        <div style="display:flex;gap:6px;flex-wrap:wrap">
-          <button onclick="resetPool()" style="background:#e53935;color:white;padding:6px 12px;border-radius:8px;font-size:11px;font-weight:600">🗑 Reset Pool</button>
-          <button onclick="setWinScore()" style="background:#ff9800;color:white;padding:6px 12px;border-radius:8px;font-size:11px;font-weight:600">🏆 Set Winner Score</button>
-        </div>
-      </div>`;
+      html += '<div class="card" style="padding:12px;background:#fff8f8;border-color:#ffcdd2">'
+        +'<div class="pf" style="font-size:13px;font-weight:700;color:#c62828;margin-bottom:6px">Commissioner Controls</div>'
+        +'<div style="display:flex;gap:6px;flex-wrap:wrap">'
+        +'<button onclick="resetPool()" style="background:#e53935;color:white;padding:6px 12px;border-radius:8px;font-size:11px;font-weight:600">🗑 Reset Pool</button>'
+        +'<button onclick="setWinScore()" style="background:#ff9800;color:white;padding:6px 12px;border-radius:8px;font-size:11px;font-weight:600">🏆 Set Winner Score</button>'
+        +'</div></div>';
     }
     html += '</div>';
   }
 
   html += '</div>';
-  app.innerHTML = html;
+  $('app').innerHTML = html;
 }
 
 function renderWho() {
-  $('app').innerHTML = `<div class="who-modal">
-    <div class="who-box">
-      <div style="font-size:32px;margin-bottom:8px">⛳</div>
-      <h2 class="pf" style="font-size:22px">Masters Pool 2026</h2>
-      <p class="ss">Who are you?</p>
-      ${MEMBERS.map(m=>`<button class="who-btn ss" onclick="selectUser('${m}')">${m}</button>`).join('')}
-    </div>
-  </div>`;
+  let html = '<div class="who-modal"><div class="who-box">'
+    +'<div style="font-size:32px;margin-bottom:8px">⛳</div>'
+    +'<h2 class="pf" style="font-size:22px">Masters Pool 2026</h2>'
+    +'<p class="ss">Who are you?</p>';
+  MEMBERS.forEach(m=>{ html+='<button class="who-btn ss" onclick="selectUser(\''+m+'\')">'+m+'</button>'; });
+  html += '</div></div>';
+  $('app').innerHTML = html;
 }
 
 // ═══════════════════════════════════════════════════════
-// ACTIONS (global for onclick handlers)
+// GLOBAL ACTIONS
 // ═══════════════════════════════════════════════════════
 
-window.selectUser = function(name) {
-  currentUser = name;
-  localStorage.setItem('masters-pool-user', name);
-  currentView = 'mypicks';
-  render();
-};
-
-window.switchUser = function() {
-  currentUser = null;
-  localStorage.removeItem('masters-pool-user');
-  render();
-};
-
-window.setView = function(v) {
-  currentView = v;
-  render();
-};
-
+window.selectUser = function(name) { currentUser=name; localStorage.setItem('masters-pool-user',name); currentView='mypicks'; render(); };
+window.switchUser = function() { currentUser=null; localStorage.removeItem('masters-pool-user'); render(); };
+window.setView = function(v) { currentView=v; render(); };
 window.fetchESPN = fetchESPN;
 
 window.makePick = function(member, tier, golfer) {
-  if(STATE.locked && !isComm()) { flash("Picks are locked!"); return; }
-  if(!STATE.picks) STATE.picks = {};
-  if(!STATE.picks[member]) STATE.picks[member] = {};
-  STATE.picks[member][tier] = golfer;
-  saveState(); render();
+  if(STATE.locked && currentUser!==COMMISSIONER) { flash("Picks are locked!"); return; }
+  if(!STATE.picks) STATE.picks={};
+  if(!STATE.picks[member]) STATE.picks[member]={};
+  STATE.picks[member][tier]=golfer;
+  saveState();
 };
 
 window.setTB = function(member, val) {
-  if(STATE.locked && !isComm()) { flash("Picks are locked!"); return; }
-  if(!STATE.tiebreakers) STATE.tiebreakers = {};
-  STATE.tiebreakers[member] = val === '' ? null : Number(val);
-  saveState(); render();
+  if(STATE.locked && currentUser!==COMMISSIONER) { flash("Picks are locked!"); return; }
+  if(!STATE.tiebreakers) STATE.tiebreakers={};
+  STATE.tiebreakers[member] = val===''?null:Number(val);
+  saveState();
 };
 
 window.setManual = function(golfer, round, val) {
-  if(!STATE.manualScores) STATE.manualScores = {};
-  if(!STATE.manualScores[golfer]) STATE.manualScores[golfer] = {};
-  STATE.manualScores[golfer][round] = val === '' ? null : Number(val);
-  saveState(); render();
+  if(!STATE.manualScores) STATE.manualScores={};
+  if(!STATE.manualScores[golfer]) STATE.manualScores[golfer]={};
+  STATE.manualScores[golfer][round] = val===''?null:Number(val);
+  saveState();
 };
 
 window.toggleCut = function(golfer) {
-  if(!STATE.cutList) STATE.cutList = [];
-  if(STATE.cutList.includes(golfer)) STATE.cutList = STATE.cutList.filter(g=>g!==golfer);
+  if(!STATE.cutList) STATE.cutList=[];
+  if(STATE.cutList.includes(golfer)) STATE.cutList=STATE.cutList.filter(g=>g!==golfer);
   else STATE.cutList.push(golfer);
-  saveState(); render();
+  saveState();
 };
 
-window.lockPicks = function() {
-  STATE.locked = true;
-  saveState(); flash("Picks locked!"); render();
-};
-
-window.unlockPicks = function() {
-  STATE.locked = false;
-  saveState(); flash("Picks unlocked."); render();
-};
-
-window.setPickFor = function(member) {
-  window._pickForMember = member || currentUser;
-  render();
-};
-
-window.resetPool = function() {
-  if(confirm("Reset the ENTIRE pool? Cannot be undone.")) {
-    STATE = {...DEFAULT_STATE};
-    saveState(); flash("Pool reset."); render();
-  }
-};
-
-window.setWinScore = function() {
-  const v = prompt("Enter winning score (e.g., -12):", STATE.winningScore || "");
-  if(v !== null) { STATE.winningScore = Number(v); saveState(); render(); }
-};
+window.lockPicks = function() { STATE.locked=true; saveState(); flash("Picks locked!"); };
+window.unlockPicks = function() { STATE.locked=false; saveState(); flash("Picks unlocked."); };
+window.setPickFor = function(m) { pickForMember=m||null; render(); };
+window.resetPool = function() { if(confirm("Reset the ENTIRE pool? Cannot be undone.")){STATE={...DEFAULT_STATE};saveState();flash("Pool reset.");} };
+window.setWinScore = function() { const v=prompt("Enter winning score (e.g., -12):",STATE.winningScore||""); if(v!==null){STATE.winningScore=Number(v);saveState();} };
 
 // ═══════════════════════════════════════════════════════
 // INIT
 // ═══════════════════════════════════════════════════════
 
-loadState(() => {
-  render();
-  // Auto-refresh ESPN every 5 min if tournament is live
-  setInterval(() => {
-    if(STATE.locked && STATE.currentRound > 0) fetchESPN();
-  }, 300000);
-});
+loadState(()=>{ render(); });
+setInterval(()=>{ if(STATE.locked&&STATE.currentRound>0) fetchESPN(); }, 300000);
 
 </script>
 </body>
