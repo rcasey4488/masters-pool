@@ -333,7 +333,15 @@ function render() {
       +'<div class="pf" style="font-size:13px;font-weight:700;margin-bottom:5px">Tiebreaker'+(isComm()&&editMem!==currentUser?' (for '+h(editMem)+')':'')+'</div>'
       +'<div class="ss" style="font-size:11px;color:#888;margin-bottom:7px">Predict the winning score (e.g., -12)</div>'
       +'<input type="number" value="'+tbVal+'" onchange="setTB(\''+editMem.replace(/'/g,"\\'")+'\',this.value)" placeholder="-10" style="border:2px solid var(--g);border-radius:8px;padding:6px 10px;font-size:16px;width:85px;text-align:center;font-weight:600"'+(canEdit?'':' disabled')+'>'
-      +'</div></div>';
+      +'</div>';
+
+    if(canEdit) {
+      html += '<div style="margin-top:12px;text-align:center">'
+        +'<button onclick="resetMyPicks(\''+editMem.replace(/'/g,"\\'")+'\')" style="background:none;border:1px solid #ccc;color:#999;padding:7px 16px;border-radius:8px;font-size:12px;font-weight:500;cursor:pointer">Reset '+h(editMem)+'\'s Picks</button>'
+        +'</div>';
+    }
+
+    html += '</div>';
   }
 
   // ──── SCORES ────
@@ -458,8 +466,19 @@ window.makePick = function(member, tier, golfer) {
   if(STATE.locked && currentUser!==COMMISSIONER) { flash("Picks are locked!"); return; }
   if(!STATE.picks) STATE.picks={};
   if(!STATE.picks[member]) STATE.picks[member]={};
-  STATE.picks[member][tier]=golfer;
+  if(STATE.picks[member][tier]===golfer) { delete STATE.picks[member][tier]; }
+  else { STATE.picks[member][tier]=golfer; }
   saveState();
+};
+
+window.resetMyPicks = function(member) {
+  if(STATE.locked && currentUser!==COMMISSIONER) { flash("Picks are locked!"); return; }
+  if(confirm("Clear all picks for "+member+"?")) {
+    if(!STATE.picks) STATE.picks={};
+    STATE.picks[member]={};
+    if(STATE.tiebreakers) STATE.tiebreakers[member]=null;
+    saveState(); flash(member+"'s picks cleared.");
+  }
 };
 
 window.setTB = function(member, val) {
