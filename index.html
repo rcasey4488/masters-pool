@@ -208,67 +208,131 @@ function getAllPicked() {
 async function fetchESPN() {
   fetching=true; render();
   try {
-    // Try multiple ESPN endpoints — the basic scoreboard often doesn't include the current golf event
+    let success = false;
+
+    // ── ATTEMPT 1: ESPN endpoints ──
     const urls = [
       "https://site.api.espn.com/apis/site/v2/sports/golf/pga/scoreboard",
       "https://site.api.espn.com/apis/site/v2/sports/golf/pga/scoreboard?dates=" + new Date().toISOString().slice(0,10).replace(/-/g,''),
       "https://site.web.api.espn.com/apis/site/v2/sports/golf/pga/leaderboard?event=401811941"
     ];
-    let ev = null;
-    let competitors = null;
     for(const url of urls) {
       try {
         const r = await fetch(url);
         const d = await r.json();
-        // Try leaderboard endpoint format first
-        if(d?.events?.[0]?.competitions?.[0]?.competitors) {
-          const found = (d.events||[]).find(e=>e.name?.toLowerCase().includes("masters")||e.shortName?.toLowerCase().includes("masters"));
-          if(found) { ev=found; competitors=found.competitions?.[0]?.competitors||[]; break; }
-        }
-        // Also try if the event data is at root level (leaderboard endpoint)
-        if(d?.competition?.competitors) { competitors=d.competition.competitors; ev=d; break; }
-        if(d?.competitions?.[0]?.competitors) { competitors=d.competitions[0].competitors; ev=d; break; }
-        // If events array exists, check all events
+        let competitors = null;
+        // Check various ESPN response formats
         if(d?.events) {
-          for(const e of d.events) {
-            const comps = e.competitions?.[0]?.competitors;
-            if(comps && comps.length > 20) { ev=e; competitors=comps; break; }
-          }
-          if(ev) break;
+          const found = (d.events||[]).find(e=>e.name?.toLowerCase().includes("masters")||e.shortName?.toLowerCase().includes("masters"));
+          if(found) competitors=found.competitions?.[0]?.competitors||[];
+          // Also accept any event with 20+ competitors (likely the current tournament)
+          if(!competitors) for(const e of d.events) { const comps=e.competitions?.[0]?.competitors; if(comps&&comps.length>20){competitors=comps;break;} }
         }
-      } catch(err) { console.log("Tried "+url, err); }
+        if(!competitors && d?.competition?.competitors) competitors=d.competition.competitors;
+        if(!competitors && d?.competitions?.[0]?.competitors) competitors=d.competitions[0].competitors;
+        if(competitors && competitors.length>0) {
+          success = parseESPNCompetitors(competitors);
+          if(success) break;
+        }
+      } catch(err) { console.log("ESPN tried "+url, err); }
     }
-    if(!ev||!competitors||competitors.length===0){flash("Masters not found on ESPN yet — try again in a few minutes.");fetching=false;render();return;}
-    const cs=competitors;
-    const ns={};const nc=[];let rd=0;
-    for(const c of cs){
-      const nm=c.athlete?.displayName||c.athlete?.shortName||"";
-      const m=matchName(nm);if(!m)continue;
-      const rounds=[null,null,null,null];
-      const ls=c.linescores||[];
-      for(let i=0;i<Math.min(4,ls.length);i++){
-        // value = total strokes for the round (e.g. 63.0, 72.0)
-        // During mid-round, value may be partial (e.g. 5.0 for 5 strokes thru 1 hole)
-        // Only accept as a completed round score if it looks like a full 18-hole score (55-120)
-        const v=ls[i]?.value;
-        if(v!==undefined&&v!==null&&v>=55&&v<=120){rounds[i]=Math.round(v);if(i+1>rd)rd=i+1;}
-      }
-      const stat=c.status?.displayValue||"";
-      const cut=stat.toLowerCase().includes("cut")||c.status?.type?.description?.toLowerCase().includes("cut");
-      // Get position and thru info
-      const pos=c.status?.position?.displayName||c.sortOrder?.toString()||"";
-      const thru=c.status?.thru||c.status?.displayValue||"";
-      const toPar=c.score?.displayValue||"";
-      ns[m]={rounds,toPar,position:pos,status:stat,thru};
-      if(cut)nc.push(m);
+
+    // ── ATTEMPT 2: Masters.com JSON feed ──
+    if(!success) {
+      try {
+        const mastersUrls = [
+          "https://www.masters.com/en_US/scores/feeds/2026/scores.json",
+          "https://www.masters.com/en_US/scores/feeds/scores.json"
+        ];
+        for(const mUrl of mastersUrls) {
+          try {
+            const mr = await fetch(mUrl);
+            if(mr.ok) {
+              const md = await mr.json();
+              success = parseMastersData(md);
+              if(success) break;
+            }
+          } catch(err) { console.log("Masters.com tried "+mUrl, err); }
+        }
+      } catch(e) { console.log("Masters.com fallback failed", e); }
     }
-    let ws=null;
-    if(rd>=4){const l=cs.find(c=>c.sortOrder===1);if(l?.score?.displayValue){const p=parseInt(l.score.displayValue);if(!isNaN(p))ws=p;}}
-    STATE.espnScores=ns;STATE.cutList=nc;STATE.lastFetch=new Date().toISOString();STATE.currentRound=rd;
-    if(ws!==null)STATE.winningScore=ws;
-    saveState(); flash('Scores updated! '+(rd>0?'Round '+rd:'Pre-tournament'));
-  } catch(e){console.error(e);flash("ESPN fetch failed — try again.");}
+
+    // ── ATTEMPT 3: Scrape ESPN leaderboard page for data ──
+    if(!success) {
+      try {
+        const pr = await fetch("https://www.espn.com/golf/leaderboard/_/tour/pga");
+        const html = await pr.text();
+        // ESPN embeds JSON in a window.__espnfitt__ or __NEXT_DATA__ script tag
+        const match = html.match(/"competitors"\s*:\s*(\[[\s\S]*?\])\s*[,}]/);
+        if(match) {
+          try {
+            const competitors = JSON.parse(match[1]);
+            if(competitors.length > 20) success = parseESPNCompetitors(competitors);
+          } catch(pe) { console.log("Parse embedded JSON failed", pe); }
+        }
+      } catch(e) { console.log("ESPN HTML fallback failed", e); }
+    }
+
+    if(!success) {
+      flash("Could not fetch Masters scores — ESPN may be lagging. Try again in a few minutes, or enter scores manually on the Scores tab.");
+    }
+  } catch(e){console.error(e);flash("Score fetch failed — try again.");}
   fetching=false;render();
+}
+
+function parseESPNCompetitors(cs) {
+  const ns={};const nc=[];let rd=0;
+  for(const c of cs){
+    const nm=c.athlete?.displayName||c.athlete?.shortName||"";
+    const m=matchName(nm);if(!m)continue;
+    const rounds=[null,null,null,null];
+    const ls=c.linescores||[];
+    for(let i=0;i<Math.min(4,ls.length);i++){
+      const v=ls[i]?.value;
+      if(v!==undefined&&v!==null&&v>=55&&v<=120){rounds[i]=Math.round(v);if(i+1>rd)rd=i+1;}
+    }
+    const stat=c.status?.displayValue||"";
+    const cut=stat.toLowerCase().includes("cut")||c.status?.type?.description?.toLowerCase().includes("cut");
+    const pos=c.status?.position?.displayName||c.sortOrder?.toString()||"";
+    const thru=c.status?.thru||c.status?.displayValue||"";
+    const toPar=c.score?.displayValue||c.score||"";
+    ns[m]={rounds,toPar:String(toPar),position:pos,status:stat,thru};
+    if(cut)nc.push(m);
+  }
+  if(Object.keys(ns).length===0) return false;
+  let ws=null;
+  if(rd>=4){const l=cs.find(c=>c.sortOrder===1);if(l?.score?.displayValue){const p=parseInt(l.score.displayValue);if(!isNaN(p))ws=p;}}
+  STATE.espnScores=ns;STATE.cutList=nc;STATE.lastFetch=new Date().toISOString();STATE.currentRound=rd;
+  if(ws!==null)STATE.winningScore=ws;
+  saveState(); flash('Scores updated from ESPN! '+(rd>0?'Round '+rd:'Live'));
+  return true;
+}
+
+function parseMastersData(md) {
+  // Masters.com JSON typically has a "data" or "players" array
+  const players = md?.data?.player || md?.players || md?.data?.players || (Array.isArray(md) ? md : null);
+  if(!players || !Array.isArray(players)) return false;
+  const ns={};const nc=[];let rd=0;
+  for(const p of players) {
+    const name = p.display_name || p.player_name || p.first_name+' '+p.last_name || "";
+    const m=matchName(name);if(!m)continue;
+    const rounds=[null,null,null,null];
+    const rScores = p.rounds || [];
+    for(let i=0;i<Math.min(4,rScores.length);i++){
+      const v = parseInt(rScores[i]?.strokes || rScores[i]);
+      if(!isNaN(v)&&v>=55&&v<=120){rounds[i]=v;if(i+1>rd)rd=i+1;}
+    }
+    const toPar = p.topar || p.to_par || p.today || p.total || "";
+    const pos = p.pos || p.position || p.current_position || "";
+    const thru = p.thru || "";
+    const cut = (p.status||"").toLowerCase().includes("cut");
+    ns[m]={rounds,toPar:String(toPar),position:String(pos),status:p.status||"",thru:String(thru)};
+    if(cut) nc.push(m);
+  }
+  if(Object.keys(ns).length===0) return false;
+  STATE.espnScores=ns;STATE.cutList=nc;STATE.lastFetch=new Date().toISOString();STATE.currentRound=rd;
+  saveState(); flash('Scores updated from Masters.com! '+(rd>0?'Round '+rd:'Live'));
+  return true;
 }
 
 // ═══════════════════════════════════════════════════════
