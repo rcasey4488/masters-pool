@@ -142,27 +142,56 @@ function golferScore(g) {
     else if(i>=2&&cut) rounds[i]=80;
   }
   let tot=0,cnt=0; for(const r of rounds) if(r!==null){tot+=r;cnt++;}
-  return {rounds,total:cnt>0?tot:null,played:cnt,toPar:e?.toPar||"",position:e?.position||"",isCut:cut};
+  // Parse toPar as a number for live scoring (e.g. "+2" → 2, "-3" → -3, "E" → 0)
+  let livePar = null;
+  const tp = e?.toPar||"";
+  if(tp==='E'||tp==='e') livePar=0;
+  else { const pn=parseInt(tp); if(!isNaN(pn)) livePar=pn; }
+  return {rounds,total:cnt>0?tot:null,played:cnt,toPar:tp,livePar,position:e?.position||"",isCut:cut,thru:e?.thru||""};
 }
 
 function memberResult(member) {
   const p = STATE.picks?.[member];
-  if(!p) return {best4:null,details:[],tb:null,cnt:0};
+  if(!p) return {best4:null,livePar:null,details:[],tb:null,cnt:0};
   const det = [];
   for(let t=1;t<=6;t++){
-    const g=p[t]; if(!g){det.push({tier:t,golfer:null,total:null,isCut:false});continue;}
+    const g=p[t]; if(!g){det.push({tier:t,golfer:null,total:null,livePar:null,isCut:false});continue;}
     const s=golferScore(g); det.push({tier:t,golfer:g,...s});
   }
+  // Best 4 of 6 by completed stroke totals
   const valid=det.filter(d=>d.total!==null).sort((a,b)=>a.total-b.total);
   const b4set=new Set(valid.slice(0,4).map(d=>d.tier));
   const b4=valid.length>=4?valid.slice(0,4).reduce((s,d)=>s+d.total,0):(valid.length>0?valid.reduce((s,d)=>s+d.total,0):null);
-  return {best4:b4,details:det.map(d=>({...d,used:b4set.has(d.tier)})),tb:STATE.tiebreakers?.[member]??null,cnt:Object.keys(p).length};
+
+  // Live to-par pool score: best 4 of 6 by livePar
+  const liveValid=det.filter(d=>d.livePar!==null).sort((a,b)=>a.livePar-b.livePar);
+  const liveSet=new Set(liveValid.slice(0,4).map(d=>d.tier));
+  const lp=liveValid.length>0?liveValid.slice(0,Math.min(4,liveValid.length)).reduce((s,d)=>s+d.livePar,0):null;
+
+  // Use live set for "used" markers if no completed rounds yet
+  const useSet = valid.length>0 ? b4set : liveSet;
+  return {best4:b4,livePar:lp,details:det.map(d=>({...d,used:useSet.has(d.tier)})),tb:STATE.tiebreakers?.[member]??null,cnt:Object.keys(p).length};
 }
 
 function getBoard() {
   return MEMBERS.map(m=>({name:m,...memberResult(m)})).sort((a,b)=>{
-    if(a.best4===null&&b.best4===null)return 0;if(a.best4===null)return 1;if(b.best4===null)return -1;
-    if(a.best4!==b.best4)return a.best4-b.best4;
+    // Sort by best4 stroke total if available
+    if(a.best4!==null&&b.best4!==null){
+      if(a.best4!==b.best4) return a.best4-b.best4;
+    }
+    // If neither has stroke totals, sort by livePar
+    if(a.best4===null&&b.best4===null){
+      if(a.livePar!==null&&b.livePar!==null){
+        if(a.livePar!==b.livePar) return a.livePar-b.livePar;
+      }
+      if(a.livePar===null&&b.livePar===null) return 0;
+      if(a.livePar===null) return 1;
+      return -1;
+    }
+    // One has stroke total the other doesn't — stroke total first
+    if(a.best4===null) return 1;
+    if(b.best4===null) return -1;
+    // Tiebreaker
     if(STATE.winningScore!==null&&a.tb!==null&&b.tb!==null) return Math.abs(a.tb-STATE.winningScore)-Math.abs(b.tb-STATE.winningScore);
     return 0;
   });
@@ -179,23 +208,58 @@ function getAllPicked() {
 async function fetchESPN() {
   fetching=true; render();
   try {
-    const r=await fetch("https://site.api.espn.com/apis/site/v2/sports/golf/pga/scoreboard");
-    const d=await r.json();
-    const ev=(d?.events||[]).find(e=>e.name?.toLowerCase().includes("masters")||e.shortName?.toLowerCase().includes("masters"));
-    if(!ev){flash("Masters not on ESPN scoreboard yet — will work tournament week.");fetching=false;render();return;}
-    const cs=ev.competitions?.[0]?.competitors||[];
+    // Try multiple ESPN endpoints — the basic scoreboard often doesn't include the current golf event
+    const urls = [
+      "https://site.api.espn.com/apis/site/v2/sports/golf/pga/scoreboard",
+      "https://site.api.espn.com/apis/site/v2/sports/golf/pga/scoreboard?dates=" + new Date().toISOString().slice(0,10).replace(/-/g,''),
+      "https://site.web.api.espn.com/apis/site/v2/sports/golf/pga/leaderboard?event=401811941"
+    ];
+    let ev = null;
+    let competitors = null;
+    for(const url of urls) {
+      try {
+        const r = await fetch(url);
+        const d = await r.json();
+        // Try leaderboard endpoint format first
+        if(d?.events?.[0]?.competitions?.[0]?.competitors) {
+          const found = (d.events||[]).find(e=>e.name?.toLowerCase().includes("masters")||e.shortName?.toLowerCase().includes("masters"));
+          if(found) { ev=found; competitors=found.competitions?.[0]?.competitors||[]; break; }
+        }
+        // Also try if the event data is at root level (leaderboard endpoint)
+        if(d?.competition?.competitors) { competitors=d.competition.competitors; ev=d; break; }
+        if(d?.competitions?.[0]?.competitors) { competitors=d.competitions[0].competitors; ev=d; break; }
+        // If events array exists, check all events
+        if(d?.events) {
+          for(const e of d.events) {
+            const comps = e.competitions?.[0]?.competitors;
+            if(comps && comps.length > 20) { ev=e; competitors=comps; break; }
+          }
+          if(ev) break;
+        }
+      } catch(err) { console.log("Tried "+url, err); }
+    }
+    if(!ev||!competitors||competitors.length===0){flash("Masters not found on ESPN yet — try again in a few minutes.");fetching=false;render();return;}
+    const cs=competitors;
     const ns={};const nc=[];let rd=0;
     for(const c of cs){
       const nm=c.athlete?.displayName||c.athlete?.shortName||"";
       const m=matchName(nm);if(!m)continue;
       const rounds=[null,null,null,null];
-      for(let i=0;i<Math.min(4,(c.linescores||[]).length);i++){
-        const v=c.linescores[i]?.value;
-        if(v!==undefined&&v!==null&&v>0){rounds[i]=v;if(i+1>rd)rd=i+1;}
+      const ls=c.linescores||[];
+      for(let i=0;i<Math.min(4,ls.length);i++){
+        // value = total strokes for the round (e.g. 63.0, 72.0)
+        // During mid-round, value may be partial (e.g. 5.0 for 5 strokes thru 1 hole)
+        // Only accept as a completed round score if it looks like a full 18-hole score (55-120)
+        const v=ls[i]?.value;
+        if(v!==undefined&&v!==null&&v>=55&&v<=120){rounds[i]=Math.round(v);if(i+1>rd)rd=i+1;}
       }
       const stat=c.status?.displayValue||"";
       const cut=stat.toLowerCase().includes("cut")||c.status?.type?.description?.toLowerCase().includes("cut");
-      ns[m]={rounds,toPar:c.score?.displayValue||"",position:c.status?.position?.displayName||c.sortOrder?.toString()||"",status:stat};
+      // Get position and thru info
+      const pos=c.status?.position?.displayName||c.sortOrder?.toString()||"";
+      const thru=c.status?.thru||c.status?.displayValue||"";
+      const toPar=c.score?.displayValue||"";
+      ns[m]={rounds,toPar,position:pos,status:stat,thru};
       if(cut)nc.push(m);
     }
     let ws=null;
@@ -255,7 +319,12 @@ function render() {
       +'</div>';
 
     board.forEach((e,i)=>{
-      const pos=i+1,lead=pos===1&&e.best4!==null;
+      const pos=i+1;
+      const hasScore = e.best4!==null||e.livePar!==null;
+      const lead=pos===1&&hasScore;
+      // Display: prefer stroke total, fall back to live to-par
+      const scoreDisplay = e.best4!==null ? e.best4 : (e.livePar!==null ? (e.livePar>0?'+'+e.livePar:(e.livePar===0?'E':''+e.livePar)) : '—');
+      const scoreLabel = e.best4!==null ? '' : (e.livePar!==null ? ' to par' : '');
       html += '<div class="card" style="border:'+(lead?'2px solid var(--gold)':'1px solid #e0e0e0')+';background:'+(lead?'linear-gradient(135deg,var(--g),var(--gd))':'white')+';animation:fadeIn '+(.1+i*.04).toFixed(2)+'s">'
         +'<div style="padding:11px 13px">'
         +'<div style="display:flex;justify-content:space-between;align-items:center">'
@@ -264,21 +333,26 @@ function render() {
         +'<div><div class="pf" style="font-size:15px;font-weight:700;color:'+(lead?'white':'var(--dk)')+'">'+h(e.name)+(e.name===currentUser?' (You)':'')+'</div>'
         +(e.tb!==null?'<div class="ss" style="font-size:10px;color:'+(lead?'rgba(255,255,255,.45)':'#bbb')+'">TB: '+e.tb+'</div>':'')
         +'</div></div>'
-        +'<div class="pf" style="font-size:24px;font-weight:900;color:'+(lead?'var(--gold)':'var(--g)')+'">'+( e.best4!==null?e.best4:'—')+'</div>'
+        +'<div style="text-align:right"><div class="pf" style="font-size:24px;font-weight:900;color:'+(lead?'var(--gold)':'var(--g)')+'">'+scoreDisplay+'</div>'
+        +(scoreLabel?'<div class="ss" style="font-size:9px;color:'+(lead?'rgba(255,255,255,.4)':'#aaa')+'">'+scoreLabel+'</div>':'')
+        +'</div>'
         +'</div>';
 
       if(e.details.some(d=>d.golfer) && (STATE.locked || e.name===currentUser || isComm())) {
         html += '<div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:7px">';
         e.details.forEach(d=>{
           if(!d.golfer){html+='<span class="ss" style="font-size:10px;color:'+(lead?'rgba(255,255,255,.25)':'#ccc')+';padding:2px 7px;background:'+(lead?'rgba(255,255,255,.04)':'#f8f8f5')+';border-radius:5px">T'+d.tier+': —</span>';return;}
-          const drop=!d.used&&e.details.filter(x=>x.total!==null).length>=4;
+          const drop=!d.used&&e.details.filter(x=>x.total!==null||x.livePar!==null).length>=4;
+          // Show to-par for each golfer if no stroke total
+          const gScore = d.total!==null ? d.total : (d.toPar ? d.toPar : '');
+          const gColor = d.total!==null ? (lead?'white':'var(--dk)') : (d.toPar?.startsWith('-')?'#2e7d32':(d.toPar?.startsWith('+')?'#c62828':'#666'));
           html+='<span class="ss" style="font-size:10px;padding:2px 7px;border-radius:5px;'
             +'background:'+(d.used?(lead?'rgba(212,168,67,.18)':'rgba(0,103,71,.06)'):(lead?'rgba(255,255,255,.04)':'#f8f8f5'))+';'
             +'border:'+(d.used?'1px solid '+(lead?'rgba(212,168,67,.35)':'rgba(0,103,71,.2)'):'1px solid transparent')+';'
             +'color:'+(lead?(d.used?'var(--gold)':'rgba(255,255,255,.35)'):(drop?'#bbb':'#555'))+';'
             +'text-decoration:'+(drop?'line-through':'none')+';opacity:'+(drop?.55:1)+'">'
             +'<b>T'+d.tier+'</b> '+h(ln(d.golfer))
-            +(d.total!==null?'<span style="font-weight:700;margin-left:2px;color:'+(lead?'white':'var(--dk)')+'">'+d.total+'</span>':'')
+            +(gScore?'<span style="font-weight:700;margin-left:2px;color:'+gColor+'">'+h(String(gScore))+'</span>':'')
             +(d.isCut?'<span style="color:#e53935;margin-left:2px;font-size:9px">MC</span>':'')
             +'</span>';
         });
@@ -346,7 +420,18 @@ function render() {
 
   // ──── SCORES ────
   if(currentView==='scores') {
-    const picked = [...getAllPicked()].sort((a,b)=>{const sa=golferScore(a),sb=golferScore(b);if(sa.total===null&&sb.total===null)return a.localeCompare(b);if(sa.total===null)return 1;if(sb.total===null)return -1;return sa.total-sb.total;});
+    // Sort by: position if available, then toPar, then alphabetically
+    const parsePar = p => { if(!p) return 999; if(p==='E') return 0; const n=parseInt(p); return isNaN(n)?999:n; };
+    const picked = [...getAllPicked()].sort((a,b)=>{
+      const sa=golferScore(a),sb=golferScore(b);
+      // Sort by position first if available
+      const pa=parseInt(sa.position)||999, pb=parseInt(sb.position)||999;
+      if(pa!==pb) return pa-pb;
+      // Then by toPar
+      const ta=parsePar(sa.toPar), tb=parsePar(sb.toPar);
+      if(ta!==tb) return ta-tb;
+      return a.localeCompare(b);
+    });
 
     html += '<div style="animation:fadeIn .3s">'
       +'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">'
@@ -374,8 +459,13 @@ function render() {
           html += '<td style="color:'+(s.rounds[r]!==null?'var(--dk)':'#ccc')+';font-weight:'+(s.rounds[r]!==null?600:400)+'">'+(s.rounds[r]!==null?s.rounds[r]:'—')+'</td>';
         }
       }
-      html += '<td style="font-weight:700;color:var(--g)">'+(s.total??'—')+'</td>'
-        +'<td style="font-weight:600;font-size:11px;color:'+(s.toPar?.startsWith('-')?'#2e7d32':(s.toPar?.startsWith('+')?'#c62828':'#666'))+'">'+h(s.toPar||'—')+'</td></tr>';
+      // Show toPar in Tot column if no completed round scores yet
+      const totDisplay = s.total!==null ? s.total : (s.toPar ? h(s.toPar) : '—');
+      const totColor = s.total!==null ? 'var(--g)' : (s.toPar?.startsWith('-')?'#2e7d32':(s.toPar?.startsWith('+')?'#c62828':'#666'));
+      html += '<td style="font-weight:700;color:'+totColor+'">'+totDisplay+'</td>'
+        +'<td style="font-weight:600;font-size:11px;color:'+(s.toPar?.startsWith('-')?'#2e7d32':(s.toPar?.startsWith('+')?'#c62828':'#666'))+'">'+h(s.toPar||'—')
+        +(s.thru&&!s.thru.toLowerCase().includes('f')&&s.total===null?'<div style="font-size:9px;color:#999">'+h(s.thru)+'</div>':'')
+        +'</td></tr>';
     });
 
     html += '</tbody></table></div>';
@@ -401,15 +491,17 @@ function render() {
     for(let t=1;t<=6;t++) html+='<th>T'+t+'</th>';
     html += '<th>TB</th><th>Score</th></tr></thead><tbody>';
     board.forEach((e,i)=>{
+      const poolScore = e.best4!==null ? e.best4 : (e.livePar!==null ? (e.livePar>0?'+'+e.livePar:(e.livePar===0?'E':''+e.livePar)) : '—');
       html += '<tr style="background:'+(i%2===0?'white':'#f9f8f4')+';border-bottom:1px solid #eee">'
         +'<td style="text-align:left;padding-left:8px;font-weight:600;white-space:nowrap">'+h(e.name)+'</td>';
       e.details.forEach(d=>{
-        const drop=!d.used&&e.details.filter(x=>x.total!==null).length>=4;
+        const drop=!d.used&&e.details.filter(x=>x.total!==null||x.livePar!==null).length>=4;
+        const gScore = d.total!==null ? d.total : (d.toPar||'');
         html+='<td style="font-size:10px;color:'+(d.golfer?(d.used?'var(--g)':'#888'):'#ddd')+';font-weight:'+(d.used?700:400)+';text-decoration:'+(drop?'line-through':'none')+'">'
-          +(d.golfer?h(ln(d.golfer)):'—')+(d.total!==null?'<div style="font-size:9px;font-weight:700;color:var(--dk)">'+d.total+'</div>':'')+'</td>';
+          +(d.golfer?h(ln(d.golfer)):'—')+(gScore?'<div style="font-size:9px;font-weight:700;color:var(--dk)">'+h(String(gScore))+'</div>':'')+'</td>';
       });
       html+='<td style="font-weight:600">'+(e.tb??'—')+'</td>'
-        +'<td style="font-weight:700;color:var(--g);font-size:13px">'+(e.best4??'—')+'</td></tr>';
+        +'<td style="font-weight:700;color:var(--g);font-size:13px">'+poolScore+'</td></tr>';
     });
     html += '</tbody></table></div></div>';
   }
